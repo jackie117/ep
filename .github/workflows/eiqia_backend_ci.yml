@@ -30,7 +30,6 @@ jobs:
         runs-on: ubuntu-latest
         outputs:
             private_ref: ${{ steps.context.outputs.private_ref }}
-            target_json: ${{ steps.context.outputs.target_json }}
             run_ai_api_backend_quality: ${{ steps.context.outputs.run_ai_api_backend_quality }}
             run_backend_helper_quality: ${{ steps.context.outputs.run_backend_helper_quality }}
             run_new_api_backend_quality: ${{ steps.context.outputs.run_new_api_backend_quality }}
@@ -60,7 +59,6 @@ jobs:
                   fi
 
                   echo "private_ref=${private_ref}" >> "${GITHUB_OUTPUT}"
-                  echo "target_json=${targets_json}" >> "${GITHUB_OUTPUT}"
 
                   for target in \
                       ai_api_backend_quality \
