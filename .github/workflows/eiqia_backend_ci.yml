@@ -16,6 +16,19 @@ on:
                 required: true
                 default: "main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,backend_docker_build"
                 type: string
+    workflow_call:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                type: string
+            ci_targets:
+                description: "Comma-separated backend targets to run"
+                required: true
+                type: string
+        secrets:
+            EIQIA_DEPLOY_KEY:
+                required: true
 
 permissions:
     contents: read

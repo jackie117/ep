@@ -11,6 +11,15 @@ on:
                 required: true
                 default: "main"
                 type: string
+    workflow_call:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                type: string
+        secrets:
+            EIQIA_DEPLOY_KEY:
+                required: true
 
 permissions:
     contents: read

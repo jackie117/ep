@@ -1,0 +1,42 @@
+name: eiqia_full_ci
+
+on:
+    workflow_dispatch:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA to test"
+                required: true
+                default: "main"
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: eiqia-full-ci-${{ inputs.private_ref }}
+    cancel-in-progress: true
+
+jobs:
+    frontend_full_ci:
+        uses: ./.github/workflows/eiqia_frontend_ci.yml
+        with:
+            private_ref: ${{ inputs.private_ref }}
+            ci_targets: frontend_quality,eiqia_frontend_docker_build,blog_frontend_docker_build
+            run_main_site_frontend_production_gate: true
+        secrets:
+            EIQIA_DEPLOY_KEY: ${{ secrets.EIQIA_DEPLOY_KEY }}
+
+    backend_full_ci:
+        uses: ./.github/workflows/eiqia_backend_ci.yml
+        with:
+            private_ref: ${{ inputs.private_ref }}
+            ci_targets: ai_api_backend_quality,backend_helper_quality,new_api_backend_quality,backend_fallback_quality,main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,main_site_backend_container_quality,backend_docker_build
+        secrets:
+            EIQIA_DEPLOY_KEY: ${{ secrets.EIQIA_DEPLOY_KEY }}
+
+    main_site_e2e_full_ci:
+        uses: ./.github/workflows/eiqia_main_site_e2e_ci.yml
+        with:
+            private_ref: ${{ inputs.private_ref }}
+        secrets:
+            EIQIA_DEPLOY_KEY: ${{ secrets.EIQIA_DEPLOY_KEY }}

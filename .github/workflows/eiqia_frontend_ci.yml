@@ -21,6 +21,23 @@ on:
                 required: true
                 default: true
                 type: boolean
+    workflow_call:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                type: string
+            ci_targets:
+                description: "Comma-separated frontend targets to run"
+                required: true
+                type: string
+            run_main_site_frontend_production_gate:
+                description: "Run production main-site frontend gate"
+                required: true
+                type: boolean
+        secrets:
+            EIQIA_DEPLOY_KEY:
+                required: true
 
 permissions:
     contents: read
