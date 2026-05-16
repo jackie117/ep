@@ -69,8 +69,6 @@ jobs:
               uses: actions/setup-node@v6
               with:
                   node-version: 20
-                  cache: pnpm
-                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
 
             - name: setup_dotnet
               uses: actions/setup-dotnet@v5
