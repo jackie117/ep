@@ -1,0 +1,222 @@
+name: eiqia_frontend_ci
+
+on:
+    repository_dispatch:
+        types:
+            - eiqia_frontend_ci
+    workflow_dispatch:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                default: "main"
+                type: string
+            ci_targets:
+                description: "Comma-separated frontend targets to run"
+                required: true
+                default: "frontend_quality,eiqia_frontend_docker_build"
+                type: string
+            run_main_site_frontend_production_gate:
+                description: "Run production main-site frontend gate"
+                required: true
+                default: true
+                type: boolean
+
+permissions:
+    contents: read
+
+concurrency:
+    group: eiqia-frontend-ci-${{ github.event.client_payload.private_ref_name || inputs.private_ref }}
+    cancel-in-progress: true
+
+jobs:
+    prepare:
+        name: prepare
+        runs-on: ubuntu-latest
+        outputs:
+            private_ref: ${{ steps.context.outputs.private_ref }}
+            private_base_sha: ${{ steps.context.outputs.private_base_sha }}
+            private_head_sha: ${{ steps.context.outputs.private_head_sha }}
+            run_frontend_quality: ${{ steps.context.outputs.run_frontend_quality }}
+            run_eiqia_frontend_docker_build: ${{ steps.context.outputs.run_eiqia_frontend_docker_build }}
+            run_blog_frontend_docker_build: ${{ steps.context.outputs.run_blog_frontend_docker_build }}
+            run_main_site_frontend_production_gate: ${{ steps.context.outputs.run_main_site_frontend_production_gate }}
+        steps:
+            - name: resolve_context
+              id: context
+              shell: bash
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  DISPATCH_PRIVATE_SHA: ${{ github.event.client_payload.private_sha }}
+                  DISPATCH_PRIVATE_BASE_SHA: ${{ github.event.client_payload.private_base_sha }}
+                  INPUT_PRIVATE_REF: ${{ inputs.private_ref }}
+                  DISPATCH_TARGETS_JSON: ${{ toJson(github.event.client_payload.ci_targets) }}
+                  DISPATCH_FILTERS_JSON: ${{ toJson(github.event.client_payload.ci_filters) }}
+                  INPUT_TARGETS: ${{ inputs.ci_targets }}
+                  INPUT_RUN_PRODUCTION_GATE: ${{ inputs.run_main_site_frontend_production_gate }}
+              run: |
+                  if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+                      private_ref="${DISPATCH_PRIVATE_SHA}"
+                      private_head_sha="${DISPATCH_PRIVATE_SHA}"
+                      private_base_sha="${DISPATCH_PRIVATE_BASE_SHA}"
+                      targets_json="${DISPATCH_TARGETS_JSON}"
+                      run_production_gate="$(FILTERS_JSON="${DISPATCH_FILTERS_JSON}" python3 -c 'import json, os; print(str(json.loads(os.environ["FILTERS_JSON"]).get("main_site_frontend_code", False)).lower())')"
+                  else
+                      private_ref="${INPUT_PRIVATE_REF}"
+                      private_head_sha=""
+                      private_base_sha=""
+                      targets_json="$(python3 -c 'import json, os; print(json.dumps([item.strip() for item in os.environ["INPUT_TARGETS"].split(",") if item.strip()]))')"
+                      run_production_gate="${INPUT_RUN_PRODUCTION_GATE}"
+                  fi
+
+                  echo "private_ref=${private_ref}" >> "${GITHUB_OUTPUT}"
+                  echo "private_head_sha=${private_head_sha}" >> "${GITHUB_OUTPUT}"
+                  echo "private_base_sha=${private_base_sha}" >> "${GITHUB_OUTPUT}"
+                  echo "run_main_site_frontend_production_gate=${run_production_gate}" >> "${GITHUB_OUTPUT}"
+
+                  for target in frontend_quality eiqia_frontend_docker_build blog_frontend_docker_build
+                  do
+                      key="run_${target}"
+                      value="$(TARGETS_JSON="${targets_json}" python3 -c 'import json, os, sys; print(str(sys.argv[1] in json.loads(os.environ["TARGETS_JSON"])).lower())' "${target}")"
+                      echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+                  done
+
+    frontend_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' }}
+        name: frontend_quality
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "false"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 0
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 20
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 20
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: setup_main_site_e2e_browser
+              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+              id: setup_chrome
+              uses: browser-actions/setup-chrome@v2
+              with:
+                  chrome-version: stable
+                  install-dependencies: true
+
+            - name: verify_main_site_e2e_browser
+              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+              shell: bash
+              run: |
+                  "${{ steps.setup_chrome.outputs.chrome-path }}" --version
+                  echo "E2E_CHROME_EXECUTABLE_PATH=${{ steps.setup_chrome.outputs.chrome-path }}" >> "${GITHUB_ENV}"
+
+            - name: set_nx_shas
+              shell: bash
+              run: |
+                  base_sha="${{ needs.prepare.outputs.private_base_sha }}"
+                  head_sha="${{ needs.prepare.outputs.private_head_sha }}"
+
+                  if [[ -z "${head_sha}" ]]; then
+                      head_sha="$(git -C eiqia rev-parse HEAD)"
+                  fi
+
+                  if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+                      base_sha="$(git -C eiqia rev-parse "${head_sha}~1")"
+                  fi
+
+                  echo "NX_BASE=${base_sha}" >> "${GITHUB_ENV}"
+                  echo "NX_HEAD=${head_sha}" >> "${GITHUB_ENV}"
+
+            - name: run_frontend_lint_test_build
+              run: |
+                  echo "NX_BASE: $NX_BASE"
+                  echo "NX_HEAD: $NX_HEAD"
+                  echo "Affected projects:"
+                  pnpm --dir=eiqia/frontend/my-workspace nx show projects --affected --base=$NX_BASE --head=$NX_HEAD
+                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t lint --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
+                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t test --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
+                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t build --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
+
+            - name: run_main_site_frontend_production_gate
+              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+              working-directory: eiqia/frontend/my-workspace
+              timeout-minutes: 30
+              env:
+                  E2E_SKIP_PLAYWRIGHT_INSTALL: "1"
+                  E2E_USE_SYSTEM_CHROME: "1"
+              run: pnpm quality:main-site
+
+    eiqia_frontend_docker_build:
+        needs: [prepare, frontend_quality]
+        if: ${{ always() && needs.prepare.outputs.run_eiqia_frontend_docker_build == 'true' && (needs.frontend_quality.result == 'success' || needs.frontend_quality.result == 'skipped') }}
+        name: eiqia_frontend_docker_build
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+
+            - name: validate_compose_file
+              working-directory: eiqia
+              run: docker compose -f docker/docker-compose.yml config
+
+            - name: build_eiqia_frontend_image
+              working-directory: eiqia
+              run: docker build -f docker/eiqia-frontend/Dockerfile -t eiqia-frontend:ci .
+
+    blog_frontend_docker_build:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_blog_frontend_docker_build == 'true' }}
+        name: blog_frontend_docker_build
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+
+            - name: validate_compose_file
+              working-directory: eiqia
+              run: docker compose -f docker/docker-compose.yml config
+
+            - name: build_blog_frontend_image
+              working-directory: eiqia
+              run: docker build -f docker/blog-frontend/Dockerfile -t blog-frontend:ci .

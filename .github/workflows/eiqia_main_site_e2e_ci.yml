@@ -1,0 +1,100 @@
+name: eiqia_main_site_e2e_ci
+
+on:
+    repository_dispatch:
+        types:
+            - eiqia_main_site_e2e_ci
+    workflow_dispatch:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                default: "main"
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: eiqia-main-site-e2e-ci-${{ github.event.client_payload.private_ref_name || inputs.private_ref }}
+    cancel-in-progress: true
+
+jobs:
+    main_site_e2e_backend_sqlite:
+        name: main_site_e2e_backend_sqlite
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "false"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: resolve_private_ref
+              id: private_ref
+              shell: bash
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  DISPATCH_PRIVATE_SHA: ${{ github.event.client_payload.private_sha }}
+                  INPUT_PRIVATE_REF: ${{ inputs.private_ref }}
+              run: |
+                  if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+                      echo "value=${DISPATCH_PRIVATE_SHA}" >> "${GITHUB_OUTPUT}"
+                  else
+                      echo "value=${INPUT_PRIVATE_REF}" >> "${GITHUB_OUTPUT}"
+                  fi
+
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ steps.private_ref.outputs.value }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 20
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 20
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: setup_main_site_e2e_browser
+              id: setup_chrome
+              uses: browser-actions/setup-chrome@v2
+              with:
+                  chrome-version: stable
+                  install-dependencies: true
+
+            - name: verify_main_site_e2e_browser
+              shell: bash
+              run: |
+                  "${{ steps.setup_chrome.outputs.chrome-path }}" --version
+                  echo "E2E_CHROME_EXECUTABLE_PATH=${{ steps.setup_chrome.outputs.chrome-path }}" >> "${GITHUB_ENV}"
+
+            - name: restore_backend_dependencies
+              working-directory: eiqia
+              run: dotnet restore backend/WebApplication1/WebApplication1/WebApplication1.csproj
+
+            - name: run_main_site_e2e_backend_sqlite
+              working-directory: eiqia
+              run: timeout 20m bash scripts/ci/run_eiqia_e2e_backend.sh --db-provider sqlite --project chromium

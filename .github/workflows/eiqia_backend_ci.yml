@@ -1,0 +1,386 @@
+name: eiqia_backend_ci
+
+on:
+    repository_dispatch:
+        types:
+            - eiqia_backend_ci
+    workflow_dispatch:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                default: "main"
+                type: string
+            ci_targets:
+                description: "Comma-separated backend targets to run"
+                required: true
+                default: "main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,backend_docker_build"
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: eiqia-backend-ci-${{ github.event.client_payload.private_ref_name || inputs.private_ref }}
+    cancel-in-progress: true
+
+jobs:
+    prepare:
+        name: prepare
+        runs-on: ubuntu-latest
+        outputs:
+            private_ref: ${{ steps.context.outputs.private_ref }}
+            target_json: ${{ steps.context.outputs.target_json }}
+            run_ai_api_backend_quality: ${{ steps.context.outputs.run_ai_api_backend_quality }}
+            run_backend_helper_quality: ${{ steps.context.outputs.run_backend_helper_quality }}
+            run_new_api_backend_quality: ${{ steps.context.outputs.run_new_api_backend_quality }}
+            run_backend_fallback_quality: ${{ steps.context.outputs.run_backend_fallback_quality }}
+            run_main_site_backend_quality: ${{ steps.context.outputs.run_main_site_backend_quality }}
+            run_main_site_backend_openapi: ${{ steps.context.outputs.run_main_site_backend_openapi }}
+            run_main_site_backend_migration_drill: ${{ steps.context.outputs.run_main_site_backend_migration_drill }}
+            run_main_site_backend_container_quality: ${{ steps.context.outputs.run_main_site_backend_container_quality }}
+            run_backend_docker_build: ${{ steps.context.outputs.run_backend_docker_build }}
+        steps:
+            - name: resolve_context
+              id: context
+              shell: bash
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  DISPATCH_PRIVATE_SHA: ${{ github.event.client_payload.private_sha }}
+                  INPUT_PRIVATE_REF: ${{ inputs.private_ref }}
+                  DISPATCH_TARGETS_JSON: ${{ toJson(github.event.client_payload.ci_targets) }}
+                  INPUT_TARGETS: ${{ inputs.ci_targets }}
+              run: |
+                  if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+                      private_ref="${DISPATCH_PRIVATE_SHA}"
+                      targets_json="${DISPATCH_TARGETS_JSON}"
+                  else
+                      private_ref="${INPUT_PRIVATE_REF}"
+                      targets_json="$(python3 -c 'import json, os; print(json.dumps([item.strip() for item in os.environ["INPUT_TARGETS"].split(",") if item.strip()]))')"
+                  fi
+
+                  echo "private_ref=${private_ref}" >> "${GITHUB_OUTPUT}"
+                  echo "target_json=${targets_json}" >> "${GITHUB_OUTPUT}"
+
+                  for target in \
+                      ai_api_backend_quality \
+                      backend_helper_quality \
+                      new_api_backend_quality \
+                      backend_fallback_quality \
+                      main_site_backend_quality \
+                      main_site_backend_openapi \
+                      main_site_backend_migration_drill \
+                      main_site_backend_container_quality \
+                      backend_docker_build
+                  do
+                      key="run_${target}"
+                      value="$(TARGETS_JSON="${targets_json}" python3 -c 'import json, os, sys; print(str(sys.argv[1] in json.loads(os.environ["TARGETS_JSON"])).lower())' "${target}")"
+                      echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+                  done
+
+    ai_api_backend_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_ai_api_backend_quality == 'true' }}
+        name: ai_api_backend_quality
+        runs-on: ubuntu-latest
+        services:
+            mysql:
+                image: mysql:8.0
+                env:
+                    MYSQL_ROOT_PASSWORD: "123456"
+                    MYSQL_DATABASE: eiqia
+                    MYSQL_CHARACTER_SET_SERVER: utf8mb4
+                    MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+                ports:
+                    - 3306:3306
+                options: >-
+                    --health-cmd="mysqladmin ping -h localhost -p123456"
+                    --health-interval=10s
+                    --health-timeout=5s
+                    --health-retries=10
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+            - name: restore_ai_api_host_tests_dependencies
+              working-directory: eiqia
+              run: dotnet restore backend/WebApplication1/AiApi.Host.Tests/AiApi.Host.Tests.csproj
+            - name: test_ai_api_host
+              working-directory: eiqia
+              run: dotnet test backend/WebApplication1/AiApi.Host.Tests/AiApi.Host.Tests.csproj --configuration Release --no-restore
+            - name: smoke_test_ai_api_host_migration
+              working-directory: eiqia
+              env:
+                  REQUEST_TIMEOUT_SECONDS: "5"
+                  MAX_WAIT_SECONDS: "90"
+              run: timeout 10m bash scripts/ci/smoke_test_ai_api_host_migration.sh
+
+    backend_helper_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_backend_helper_quality == 'true' }}
+        name: backend_helper_quality
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: "3.12"
+            - name: compile_backend_tools
+              working-directory: eiqia
+              run: python -m compileall backend/tools
+            - name: validate_backend_smoke_shell_scripts
+              working-directory: eiqia
+              run: |
+                  python - <<'PY'
+                  from pathlib import Path
+                  import subprocess
+
+                  script_paths = [
+                      Path("scripts/ci/resolve_changed_ci_targets.sh"),
+                      Path("scripts/ci/test_resolve_changed_ci_targets.sh"),
+                      Path("scripts/ci/smoke_test_backend.sh"),
+                      Path("scripts/ci/smoke_test_main_site_api.sh"),
+                  ]
+
+                  for script_path in script_paths:
+                      script = script_path.read_bytes()
+                      normalized_script = script.replace(b"\r\n", b"\n")
+                      subprocess.run(["bash", "-n"], input=normalized_script, check=True)
+                  PY
+            - name: validate_backend_powershell_scripts
+              working-directory: eiqia
+              shell: pwsh
+              run: |
+                  $scriptPaths = @(
+                      "scripts/ci/smoke_test_backend.ps1",
+                      "scripts/ci/run_main_site_backend_quality.ps1",
+                      "scripts/ci/export_main_site_openapi.ps1",
+                      "scripts/ci/run_main_site_backend_migration_drill.ps1",
+                      "scripts/ci/run_main_site_backend_container_quality.ps1",
+                      "scripts/ci/resolve_changed_ci_targets.ps1",
+                      "scripts/ci/test_resolve_changed_ci_targets.ps1"
+                  )
+
+                  foreach ($scriptPath in $scriptPaths) {
+                      $errors = $null
+                      $tokens = $null
+                      [System.Management.Automation.Language.Parser]::ParseFile(
+                          $scriptPath,
+                          [ref]$tokens,
+                          [ref]$errors
+                      ) | Out-Null
+
+                      if ($errors.Count -gt 0) {
+                          Write-Error "PowerShell parse errors in ${scriptPath}:"
+                          $errors | Format-List | Out-String | Write-Error
+                          exit 1
+                      }
+                  }
+            - name: test_ci_target_resolvers
+              working-directory: eiqia
+              shell: bash
+              run: |
+                  bash scripts/ci/test_resolve_changed_ci_targets.sh
+                  pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/ci/test_resolve_changed_ci_targets.ps1
+
+    new_api_backend_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_new_api_backend_quality == 'true' }}
+        name: new_api_backend_quality
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_go
+              uses: actions/setup-go@v6
+              with:
+                  go-version-file: eiqia/backend/new-api/go.mod
+                  cache-dependency-path: eiqia/backend/new-api/go.sum
+            - name: test_new_api_backend
+              working-directory: eiqia/backend/new-api
+              run: go test -vet=off ./...
+
+    backend_fallback_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_backend_fallback_quality == 'true' }}
+        name: backend_fallback_quality
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+            - name: restore_main_site_backend_dependencies
+              working-directory: eiqia
+              run: dotnet restore backend/WebApplication1/WebApplication1.slnx
+            - name: test_main_site_backend_release
+              working-directory: eiqia
+              run: dotnet test backend/WebApplication1/WebApplication1.slnx --configuration Release --no-restore
+
+    main_site_backend_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_main_site_backend_quality == 'true' }}
+        name: main_site_backend_quality
+        runs-on: ubuntu-latest
+        services:
+            mysql:
+                image: mysql:8.0
+                env:
+                    MYSQL_ROOT_PASSWORD: "123456"
+                    MYSQL_DATABASE: eiqia
+                    MYSQL_CHARACTER_SET_SERVER: utf8mb4
+                    MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+                ports:
+                    - 3306:3306
+                options: >-
+                    --health-cmd="mysqladmin ping -h localhost -p123456"
+                    --health-interval=10s
+                    --health-timeout=5s
+                    --health-retries=10
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+            - name: run_main_site_backend_production_gate
+              working-directory: eiqia
+              shell: pwsh
+              timeout-minutes: 35
+              run: ./scripts/ci/run_main_site_backend_quality.ps1 -Profile production
+
+    main_site_backend_openapi:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_main_site_backend_openapi == 'true' }}
+        name: main_site_backend_openapi
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+            - name: verify_main_site_openapi_snapshot
+              working-directory: eiqia
+              shell: pwsh
+              timeout-minutes: 10
+              run: ./scripts/ci/export_main_site_openapi.ps1
+
+    main_site_backend_migration_drill:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_main_site_backend_migration_drill == 'true' }}
+        name: main_site_backend_migration_drill
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: setup_dotnet
+              uses: actions/setup-dotnet@v5
+              with:
+                  dotnet-version: 9.0.x
+            - name: run_main_site_backend_migration_drill
+              working-directory: eiqia
+              shell: pwsh
+              timeout-minutes: 25
+              run: ./scripts/ci/run_main_site_backend_migration_drill.ps1
+
+    main_site_backend_container_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_main_site_backend_container_quality == 'true' }}
+        name: main_site_backend_container_quality
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: run_main_site_backend_container_gate
+              working-directory: eiqia
+              shell: pwsh
+              timeout-minutes: 35
+              run: ./scripts/ci/run_main_site_backend_container_quality.ps1
+
+    backend_docker_build:
+        needs: [prepare, main_site_backend_quality]
+        if: ${{ always() && needs.prepare.outputs.run_backend_docker_build == 'true' && (needs.main_site_backend_quality.result == 'success' || needs.main_site_backend_quality.result == 'skipped') }}
+        name: backend_docker_build
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: validate_compose_file
+              working-directory: eiqia
+              run: docker compose -f docker/docker-compose.yml config
+            - name: build_eiqia_backend_image
+              working-directory: eiqia
+              run: docker build -f docker/eiqia-backend/Dockerfile -t eiqia-backend:ci .
