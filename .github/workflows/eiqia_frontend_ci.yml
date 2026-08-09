@@ -208,6 +208,13 @@ jobs:
 
             - name: validate_compose_file
               working-directory: eiqia
+              env:
+                  MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
+                  CORS_ALLOWED_ORIGINS: http://localhost:4200
+                  APP_PUBLIC_BASE_URL: http://localhost
+                  SMTP_HOST: smtp.example.com
+                  SMTP_FROM: no-reply@eiqia.com
               run: docker compose -f docker/docker-compose.yml config
 
             - name: build_eiqia_frontend_image
@@ -232,6 +239,13 @@ jobs:
 
             - name: validate_compose_file
               working-directory: eiqia
+              env:
+                  MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
+                  CORS_ALLOWED_ORIGINS: http://localhost:4200
+                  APP_PUBLIC_BASE_URL: http://localhost
+                  SMTP_HOST: smtp.example.com
+                  SMTP_FROM: no-reply@eiqia.com
               run: docker compose -f docker/docker-compose.yml config
 
             - name: build_blog_frontend_image
