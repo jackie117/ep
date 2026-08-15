@@ -14,7 +14,7 @@ on:
             ci_targets:
                 description: "Comma-separated backend targets to run"
                 required: true
-                default: "main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,backend_docker_build"
+                default: "main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,main_site_proxy_quality,backend_docker_build"
                 type: string
     workflow_call:
         inputs:
@@ -50,6 +50,7 @@ jobs:
             run_main_site_backend_quality: ${{ steps.context.outputs.run_main_site_backend_quality }}
             run_main_site_backend_openapi: ${{ steps.context.outputs.run_main_site_backend_openapi }}
             run_main_site_backend_migration_drill: ${{ steps.context.outputs.run_main_site_backend_migration_drill }}
+            run_main_site_proxy_quality: ${{ steps.context.outputs.run_main_site_proxy_quality }}
             run_main_site_backend_container_quality: ${{ steps.context.outputs.run_main_site_backend_container_quality }}
             run_backend_docker_build: ${{ steps.context.outputs.run_backend_docker_build }}
         steps:
@@ -81,6 +82,7 @@ jobs:
                       main_site_backend_quality \
                       main_site_backend_openapi \
                       main_site_backend_migration_drill \
+                      main_site_proxy_quality \
                       main_site_backend_container_quality \
                       backend_docker_build
                   do
@@ -373,6 +375,27 @@ jobs:
               shell: pwsh
               timeout-minutes: 35
               run: ./scripts/ci/run_main_site_backend_container_quality.ps1
+
+    main_site_proxy_quality:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_main_site_proxy_quality == 'true' }}
+        name: main_site_proxy_quality
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+            - name: run_main_site_proxy_quality
+              working-directory: eiqia
+              shell: pwsh
+              timeout-minutes: 45
+              run: ./scripts/ci/run_main_site_backend_proxy_quality.ps1
 
     backend_docker_build:
         needs: [prepare, main_site_backend_quality]

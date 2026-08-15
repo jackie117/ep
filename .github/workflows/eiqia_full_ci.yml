@@ -30,7 +30,7 @@ jobs:
         uses: ./.github/workflows/eiqia_backend_ci.yml
         with:
             private_ref: ${{ inputs.private_ref }}
-            ci_targets: ai_api_backend_quality,backend_helper_quality,new_api_backend_quality,backend_fallback_quality,main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,main_site_backend_container_quality,backend_docker_build
+            ci_targets: ai_api_backend_quality,backend_helper_quality,new_api_backend_quality,backend_fallback_quality,main_site_backend_quality,main_site_backend_openapi,main_site_backend_migration_drill,main_site_proxy_quality,main_site_backend_container_quality,backend_docker_build
         secrets:
             EIQIA_DEPLOY_KEY: ${{ secrets.EIQIA_DEPLOY_KEY }}
 
