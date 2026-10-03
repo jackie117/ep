@@ -210,6 +210,7 @@ jobs:
               working-directory: eiqia
               env:
                   MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  MYSQL_APP_PASSWORD: ci-compose-validation-app-password
                   JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
                   CORS_ALLOWED_ORIGINS: http://localhost:4200
                   APP_PUBLIC_BASE_URL: http://localhost
@@ -241,6 +242,7 @@ jobs:
               working-directory: eiqia
               env:
                   MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  MYSQL_APP_PASSWORD: ci-compose-validation-app-password
                   JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
                   CORS_ALLOWED_ORIGINS: http://localhost:4200
                   APP_PUBLIC_BASE_URL: http://localhost

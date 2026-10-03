@@ -186,14 +186,30 @@ jobs:
                   $scriptPaths = @(
                       "scripts/ci/smoke_test_backend.ps1",
                       "scripts/ci/run_main_site_backend_quality.ps1",
+                      "scripts/ci/run_main_site_backend_quality.nuget_audit.ps1",
+                      "scripts/ci/run_full_validation.ps1",
                       "scripts/ci/export_main_site_openapi.ps1",
                       "scripts/ci/run_main_site_backend_migration_drill.ps1",
+                      "scripts/ci/run_main_site_backend_migration_drill.legacy_forum_upgrade.ps1",
+                      "scripts/ci/run_main_site_backend_backup_drill.ps1",
                       "scripts/ci/run_main_site_backend_container_quality.ps1",
+                      "scripts/ci/run_main_site_backend_proxy_quality.ps1",
+                      "scripts/ci/verify_docker_deploy.ps1",
                       "scripts/ci/resolve_changed_ci_targets.ps1",
-                      "scripts/ci/test_resolve_changed_ci_targets.ps1"
+                      "scripts/ci/test_resolve_changed_ci_targets.ps1",
+                      "scripts/ops/backup_main_site_mysql.ps1",
+                      "scripts/ops/restore_main_site_mysql.ps1",
+                      "scripts/ops/probe_main_site_health.ps1"
                   )
 
                   foreach ($scriptPath in $scriptPaths) {
+                      # receiver 会对尚未包含新脚本的旧私有 ref 运行（例如 main 在对应 PR 合并前的推送），
+                      # 缺失的脚本跳过并显式告警，存在的一律解析；不缺文件的强校验由私有仓手动 workflow 承担。
+                      if (-not (Test-Path -LiteralPath $scriptPath)) {
+                          Write-Warning "skip validate (script not on this ref): ${scriptPath}"
+                          continue
+                      }
+
                       $errors = $null
                       $tokens = $null
                       [System.Management.Automation.Language.Parser]::ParseFile(
@@ -416,6 +432,7 @@ jobs:
               working-directory: eiqia
               env:
                   MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  MYSQL_APP_PASSWORD: ci-compose-validation-app-password
                   JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
                   CORS_ALLOWED_ORIGINS: http://localhost:4200
                   APP_PUBLIC_BASE_URL: http://localhost
