@@ -199,6 +199,8 @@ jobs:
                       "scripts/ci/test_resolve_changed_ci_targets.ps1",
                       "scripts/ops/backup_main_site_mysql.ps1",
                       "scripts/ops/restore_main_site_mysql.ps1",
+                      "scripts/ops/backup_main_site_uploads.ps1",
+                      "scripts/ops/restore_main_site_uploads.ps1",
                       "scripts/ops/probe_main_site_health.ps1"
                   )
 
