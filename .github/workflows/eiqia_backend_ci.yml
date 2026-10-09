@@ -1,4 +1,6 @@
 name: eiqia_backend_ci
+# 运行名标出触发来源：repository_dispatch 带来源标签（PR 号+标题 / 分支+提交首行），手动与复用调用回退到 private_ref
+run-name: Backend CI · ${{ github.event.client_payload.private_source_label || github.event.client_payload.private_ref_name || inputs.private_ref }}
 
 on:
     repository_dispatch:

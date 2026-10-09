@@ -1,4 +1,6 @@
 name: eiqia_full_ci
+# 仅手动触发，直接显示被测的 eiqia ref
+run-name: Full CI · ${{ inputs.private_ref }}
 
 on:
     workflow_dispatch:

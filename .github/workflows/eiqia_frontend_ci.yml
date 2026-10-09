@@ -3,6 +3,8 @@
 # 配套本仓 run_main_site_frontend_quality.mjs 的 --segments 分段能力（本任务落地）。
 # 同步方式：用户授权后把本文件内容覆盖 ep 仓同名文件（prepare/concurrency/dispatch 协议均未改动）。
 name: eiqia_frontend_ci
+# 运行名标出触发来源：repository_dispatch 带来源标签（PR 号+标题 / 分支+提交首行），手动与复用调用回退到 private_ref
+run-name: Frontend CI · ${{ github.event.client_payload.private_source_label || github.event.client_payload.private_ref_name || inputs.private_ref }}
 
 on:
     repository_dispatch:
