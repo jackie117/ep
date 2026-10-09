@@ -1,0 +1,350 @@
+# ep 公开仓 .github/workflows/eiqia_frontend_ci.yml 三 job 拆分适配版。
+# 来源：2026-10-09 拉取的 ep 原文件（255 行单 frontend_quality job），
+# 配套本仓 run_main_site_frontend_quality.mjs 的 --segments 分段能力（本任务落地）。
+# 同步方式：用户授权后把本文件内容覆盖 ep 仓同名文件（prepare/concurrency/dispatch 协议均未改动）。
+name: eiqia_frontend_ci
+
+on:
+    repository_dispatch:
+        types:
+            - eiqia_frontend_ci
+    workflow_dispatch:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                default: "main"
+                type: string
+            ci_targets:
+                description: "Comma-separated frontend targets to run"
+                required: true
+                default: "frontend_quality,eiqia_frontend_docker_build"
+                type: string
+            run_main_site_frontend_production_gate:
+                description: "Run production main-site frontend gate"
+                required: true
+                default: true
+                type: boolean
+    workflow_call:
+        inputs:
+            private_ref:
+                description: "eiqia branch, tag, or SHA"
+                required: true
+                type: string
+            ci_targets:
+                description: "Comma-separated frontend targets to run"
+                required: true
+                type: string
+            run_main_site_frontend_production_gate:
+                description: "Run production main-site frontend gate"
+                required: true
+                type: boolean
+        secrets:
+            EIQIA_DEPLOY_KEY:
+                required: true
+
+permissions:
+    contents: read
+
+concurrency:
+    group: eiqia-frontend-ci-${{ github.event.client_payload.private_ref_name || inputs.private_ref }}
+    cancel-in-progress: true
+
+jobs:
+    prepare:
+        name: prepare
+        runs-on: ubuntu-latest
+        outputs:
+            private_ref: ${{ steps.context.outputs.private_ref }}
+            private_base_sha: ${{ steps.context.outputs.private_base_sha }}
+            private_head_sha: ${{ steps.context.outputs.private_head_sha }}
+            run_frontend_quality: ${{ steps.context.outputs.run_frontend_quality }}
+            run_eiqia_frontend_docker_build: ${{ steps.context.outputs.run_eiqia_frontend_docker_build }}
+            run_blog_frontend_docker_build: ${{ steps.context.outputs.run_blog_frontend_docker_build }}
+            run_main_site_frontend_production_gate: ${{ steps.context.outputs.run_main_site_frontend_production_gate }}
+        steps:
+            - name: resolve_context
+              id: context
+              shell: bash
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  DISPATCH_PRIVATE_SHA: ${{ github.event.client_payload.private_sha }}
+                  DISPATCH_PRIVATE_BASE_SHA: ${{ github.event.client_payload.private_base_sha }}
+                  INPUT_PRIVATE_REF: ${{ inputs.private_ref }}
+                  DISPATCH_TARGETS_JSON: ${{ toJson(github.event.client_payload.ci_targets) }}
+                  DISPATCH_FILTERS_JSON: ${{ toJson(github.event.client_payload.ci_filters) }}
+                  INPUT_TARGETS: ${{ inputs.ci_targets }}
+                  INPUT_RUN_PRODUCTION_GATE: ${{ inputs.run_main_site_frontend_production_gate }}
+              run: |
+                  if [[ "${EVENT_NAME}" == "repository_dispatch" ]]; then
+                      private_ref="${DISPATCH_PRIVATE_SHA}"
+                      private_head_sha="${DISPATCH_PRIVATE_SHA}"
+                      private_base_sha="${DISPATCH_PRIVATE_BASE_SHA}"
+                      targets_json="${DISPATCH_TARGETS_JSON}"
+                      run_production_gate="$(FILTERS_JSON="${DISPATCH_FILTERS_JSON}" python3 -c 'import json, os; print(str(json.loads(os.environ["FILTERS_JSON"]).get("main_site_frontend_code", False)).lower())')"
+                  else
+                      private_ref="${INPUT_PRIVATE_REF}"
+                      private_head_sha=""
+                      private_base_sha=""
+                      targets_json="$(python3 -c 'import json, os; print(json.dumps([item.strip() for item in os.environ["INPUT_TARGETS"].split(",") if item.strip()]))')"
+                      run_production_gate="${INPUT_RUN_PRODUCTION_GATE}"
+                  fi
+
+                  echo "private_ref=${private_ref}" >> "${GITHUB_OUTPUT}"
+                  echo "private_head_sha=${private_head_sha}" >> "${GITHUB_OUTPUT}"
+                  echo "private_base_sha=${private_base_sha}" >> "${GITHUB_OUTPUT}"
+                  echo "run_main_site_frontend_production_gate=${run_production_gate}" >> "${GITHUB_OUTPUT}"
+
+                  for target in frontend_quality eiqia_frontend_docker_build blog_frontend_docker_build
+                  do
+                      key="run_${target}"
+                      value="$(TARGETS_JSON="${targets_json}" python3 -c 'import json, os, sys; print(str(sys.argv[1] in json.loads(os.environ["TARGETS_JSON"])).lower())' "${target}")"
+                      echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+                  done
+
+    # 前端门禁拆分为三个并行 job（原单 frontend_quality job 串行约 22 分钟）。
+    # dispatch target 名保持 frontend_quality 不变；三个 job 都挂在该 target 下，
+    # 其中固定集 lint_test 与构建+e2e 两个 job 叠加 production gate（main_site_frontend_code）条件。
+    # NX_DAEMON=true 经 run_main_site_frontend_quality.mjs 透传，同一 job 内多次 nx 调用共享项目图。
+    frontend_affected:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' }}
+        name: frontend_affected
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "true"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 0
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: set_nx_shas
+              shell: bash
+              run: |
+                  base_sha="${{ needs.prepare.outputs.private_base_sha }}"
+                  head_sha="${{ needs.prepare.outputs.private_head_sha }}"
+
+                  if [[ -z "${head_sha}" ]]; then
+                      head_sha="$(git -C eiqia rev-parse HEAD)"
+                  fi
+
+                  if [[ -z "${base_sha}" || "${base_sha}" == "0000000000000000000000000000000000000000" ]]; then
+                      base_sha="$(git -C eiqia rev-parse "${head_sha}~1")"
+                  fi
+
+                  echo "NX_BASE=${base_sha}" >> "${GITHUB_ENV}"
+                  echo "NX_HEAD=${head_sha}" >> "${GITHUB_ENV}"
+
+            - name: run_frontend_lint_test_build
+              run: |
+                  echo "NX_BASE: $NX_BASE"
+                  echo "NX_HEAD: $NX_HEAD"
+                  echo "Affected projects:"
+                  pnpm --dir=eiqia/frontend/my-workspace nx show projects --affected --base=$NX_BASE --head=$NX_HEAD
+                  # lint/test/build 合并为一次调用，让 Nx 跨 target 调度重叠执行，替代原先三次串行 affected 调用。
+                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t lint,test,build --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e --parallel=4
+
+    frontend_main_site_lint_test:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' && needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+        name: frontend_main_site_lint_test
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "true"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  # 固定项目集门禁不做 affected 计算，浅检出即可。
+                  fetch-depth: 1
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: run_main_site_frontend_lint_test_gate
+              working-directory: eiqia/frontend/my-workspace
+              timeout-minutes: 30
+              run: pnpm quality:main-site:lint-test
+
+    frontend_main_site_e2e:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' && needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+        name: frontend_main_site_e2e
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "true"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  # 构建+e2e 分段不做 affected 计算，浅检出即可；元数据脚本只用 HEAD rev-parse 且有兜底。
+                  fetch-depth: 1
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: setup_main_site_e2e_browser
+              id: setup_chrome
+              uses: browser-actions/setup-chrome@v2
+              with:
+                  chrome-version: stable
+                  install-dependencies: true
+
+            - name: verify_main_site_e2e_browser
+              shell: bash
+              run: |
+                  "${{ steps.setup_chrome.outputs.chrome-path }}" --version
+                  echo "E2E_CHROME_EXECUTABLE_PATH=${{ steps.setup_chrome.outputs.chrome-path }}" >> "${GITHUB_ENV}"
+
+            - name: run_main_site_frontend_build_e2e_gate
+              working-directory: eiqia/frontend/my-workspace
+              timeout-minutes: 30
+              env:
+                  E2E_SKIP_PLAYWRIGHT_INSTALL: "1"
+                  E2E_USE_SYSTEM_CHROME: "1"
+              run: pnpm quality:main-site:build-e2e
+
+    eiqia_frontend_docker_build:
+        needs: [prepare, frontend_affected, frontend_main_site_lint_test, frontend_main_site_e2e]
+        # 前端门禁拆分后 lint_test / e2e job 可能被条件跳过，必须显式允许 skipped 依赖；
+        # 被实际触发的门禁只有 success 才放行镜像构建。
+        if: ${{ always() && needs.prepare.outputs.run_eiqia_frontend_docker_build == 'true' && (needs.frontend_affected.result == 'success' || needs.frontend_affected.result == 'skipped') && (needs.frontend_main_site_lint_test.result == 'success' || needs.frontend_main_site_lint_test.result == 'skipped') && (needs.frontend_main_site_e2e.result == 'success' || needs.frontend_main_site_e2e.result == 'skipped') }}
+        name: eiqia_frontend_docker_build
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+
+            - name: validate_compose_file
+              working-directory: eiqia
+              env:
+                  MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  MYSQL_APP_PASSWORD: ci-compose-validation-app-password
+                  JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
+                  CORS_ALLOWED_ORIGINS: http://localhost:4200
+                  APP_PUBLIC_BASE_URL: http://localhost
+                  SMTP_HOST: smtp.example.com
+                  SMTP_FROM: no-reply@eiqia.com
+              run: docker compose -f docker/docker-compose.yml config
+
+            - name: build_eiqia_frontend_image
+              working-directory: eiqia
+              run: docker build -f docker/eiqia-frontend/Dockerfile -t eiqia-frontend:ci .
+
+    blog_frontend_docker_build:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_blog_frontend_docker_build == 'true' }}
+        name: blog_frontend_docker_build
+        runs-on: ubuntu-latest
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  fetch-depth: 1
+
+            - name: validate_compose_file
+              working-directory: eiqia
+              env:
+                  MYSQL_ROOT_PASSWORD: ci-compose-validation-password
+                  MYSQL_APP_PASSWORD: ci-compose-validation-app-password
+                  JWT_SECRET_KEY: ci-compose-validation-secret-key-with-more-than-32-characters
+                  CORS_ALLOWED_ORIGINS: http://localhost:4200
+                  APP_PUBLIC_BASE_URL: http://localhost
+                  SMTP_HOST: smtp.example.com
+                  SMTP_FROM: no-reply@eiqia.com
+              run: docker compose -f docker/docker-compose.yml config
+
+            - name: build_blog_frontend_image
+              working-directory: eiqia
+              run: docker build -f docker/blog-frontend/Dockerfile -t blog-frontend:ci .
