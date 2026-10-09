@@ -1,3 +1,7 @@
+# ep 公开仓 .github/workflows/eiqia_frontend_ci.yml 三 job 拆分适配版。
+# 来源：2026-10-09 拉取的 ep 原文件（255 行单 frontend_quality job），
+# 配套本仓 run_main_site_frontend_quality.mjs 的 --segments 分段能力（本任务落地）。
+# 同步方式：用户授权后把本文件内容覆盖 ep 仓同名文件（prepare/concurrency/dispatch 协议均未改动）。
 name: eiqia_frontend_ci
 
 on:
@@ -98,13 +102,17 @@ jobs:
                       echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
                   done
 
-    frontend_quality:
+    # 前端门禁拆分为三个并行 job（原单 frontend_quality job 串行约 22 分钟）。
+    # dispatch target 名保持 frontend_quality 不变；三个 job 都挂在该 target 下，
+    # 其中固定集 lint_test 与构建+e2e 两个 job 叠加 production gate（main_site_frontend_code）条件。
+    # NX_DAEMON=true 经 run_main_site_frontend_quality.mjs 透传，同一 job 内多次 nx 调用共享项目图。
+    frontend_affected:
         needs: prepare
         if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' }}
-        name: frontend_quality
+        name: frontend_affected
         runs-on: ubuntu-latest
         env:
-            NX_DAEMON: "false"
+            NX_DAEMON: "true"
             NX_ISOLATE_PLUGINS: "false"
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
         steps:
@@ -139,21 +147,6 @@ jobs:
             - name: install_frontend_dependencies
               run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
 
-            - name: setup_main_site_e2e_browser
-              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
-              id: setup_chrome
-              uses: browser-actions/setup-chrome@v2
-              with:
-                  chrome-version: stable
-                  install-dependencies: true
-
-            - name: verify_main_site_e2e_browser
-              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
-              shell: bash
-              run: |
-                  "${{ steps.setup_chrome.outputs.chrome-path }}" --version
-                  echo "E2E_CHROME_EXECUTABLE_PATH=${{ steps.setup_chrome.outputs.chrome-path }}" >> "${GITHUB_ENV}"
-
             - name: set_nx_shas
               shell: bash
               run: |
@@ -177,22 +170,124 @@ jobs:
                   echo "NX_HEAD: $NX_HEAD"
                   echo "Affected projects:"
                   pnpm --dir=eiqia/frontend/my-workspace nx show projects --affected --base=$NX_BASE --head=$NX_HEAD
-                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t lint --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
-                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t test --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
-                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t build --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e
+                  # lint/test/build 合并为一次调用，让 Nx 跨 target 调度重叠执行，替代原先三次串行 affected 调用。
+                  pnpm --dir=eiqia/frontend/my-workspace nx affected -t lint,test,build --base=$NX_BASE --head=$NX_HEAD --exclude=new-api-web,blog,blog-e2e,ai-api,ai-api-e2e --parallel=4
 
-            - name: run_main_site_frontend_production_gate
-              if: ${{ needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+    frontend_main_site_lint_test:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' && needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+        name: frontend_main_site_lint_test
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "true"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  # 固定项目集门禁不做 affected 计算，浅检出即可。
+                  fetch-depth: 1
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: run_main_site_frontend_lint_test_gate
+              working-directory: eiqia/frontend/my-workspace
+              timeout-minutes: 30
+              run: pnpm quality:main-site:lint-test
+
+    frontend_main_site_e2e:
+        needs: prepare
+        if: ${{ needs.prepare.outputs.run_frontend_quality == 'true' && needs.prepare.outputs.run_main_site_frontend_production_gate == 'true' }}
+        name: frontend_main_site_e2e
+        runs-on: ubuntu-latest
+        env:
+            NX_DAEMON: "true"
+            NX_ISOLATE_PLUGINS: "false"
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        steps:
+            - name: checkout_private_eiqia
+              uses: actions/checkout@v5
+              with:
+                  repository: jackie117/eiqia
+                  ref: ${{ needs.prepare.outputs.private_ref }}
+                  ssh-key: ${{ secrets.EIQIA_DEPLOY_KEY }}
+                  path: eiqia
+                  persist-credentials: false
+                  # 构建+e2e 分段不做 affected 计算，浅检出即可；元数据脚本只用 HEAD rev-parse 且有兜底。
+                  fetch-depth: 1
+
+            - name: setup_node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
+            - name: setup_pnpm
+              run: |
+                  corepack enable
+                  corepack prepare pnpm@10 --activate
+                  pnpm --version
+
+            - name: restore_pnpm_cache
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+                  cache: pnpm
+                  cache-dependency-path: eiqia/frontend/my-workspace/pnpm-lock.yaml
+
+            - name: install_frontend_dependencies
+              run: pnpm --dir=eiqia/frontend/my-workspace install --frozen-lockfile
+
+            - name: setup_main_site_e2e_browser
+              id: setup_chrome
+              uses: browser-actions/setup-chrome@v2
+              with:
+                  chrome-version: stable
+                  install-dependencies: true
+
+            - name: verify_main_site_e2e_browser
+              shell: bash
+              run: |
+                  "${{ steps.setup_chrome.outputs.chrome-path }}" --version
+                  echo "E2E_CHROME_EXECUTABLE_PATH=${{ steps.setup_chrome.outputs.chrome-path }}" >> "${GITHUB_ENV}"
+
+            - name: run_main_site_frontend_build_e2e_gate
               working-directory: eiqia/frontend/my-workspace
               timeout-minutes: 30
               env:
                   E2E_SKIP_PLAYWRIGHT_INSTALL: "1"
                   E2E_USE_SYSTEM_CHROME: "1"
-              run: pnpm quality:main-site
+              run: pnpm quality:main-site:build-e2e
 
     eiqia_frontend_docker_build:
-        needs: [prepare, frontend_quality]
-        if: ${{ always() && needs.prepare.outputs.run_eiqia_frontend_docker_build == 'true' && (needs.frontend_quality.result == 'success' || needs.frontend_quality.result == 'skipped') }}
+        needs: [prepare, frontend_affected, frontend_main_site_lint_test, frontend_main_site_e2e]
+        # 前端门禁拆分后 lint_test / e2e job 可能被条件跳过，必须显式允许 skipped 依赖；
+        # 被实际触发的门禁只有 success 才放行镜像构建。
+        if: ${{ always() && needs.prepare.outputs.run_eiqia_frontend_docker_build == 'true' && (needs.frontend_affected.result == 'success' || needs.frontend_affected.result == 'skipped') && (needs.frontend_main_site_lint_test.result == 'success' || needs.frontend_main_site_lint_test.result == 'skipped') && (needs.frontend_main_site_e2e.result == 'success' || needs.frontend_main_site_e2e.result == 'skipped') }}
         name: eiqia_frontend_docker_build
         runs-on: ubuntu-latest
         steps:
