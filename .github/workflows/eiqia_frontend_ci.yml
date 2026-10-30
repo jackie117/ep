@@ -317,7 +317,20 @@ jobs:
 
             - name: build_eiqia_frontend_image
               working-directory: eiqia
-              run: docker build -f docker/eiqia-frontend/Dockerfile -t eiqia-frontend:ci .
+              # nx 构建进程在 runner 上偶发启动即段错误（exit 139，2026-10-30 PR #558 第二次触发实案：
+              # 同一提交前后两次构建均成功，纯瞬态故障）。重试在同一个 runner 内进行，
+              # BuildKit 层缓存复用已成功层（如 pnpm install），仅重跑失败层，成本可控。
+              run: |
+                  for attempt in 1 2 3; do
+                      if docker build -f docker/eiqia-frontend/Dockerfile -t eiqia-frontend:ci .; then
+                          exit 0
+                      fi
+                      echo "::warning::eiqia frontend docker build attempt ${attempt}/3 failed"
+                      if [[ "${attempt}" -lt 3 ]]; then
+                          sleep 15
+                      fi
+                  done
+                  exit 1
 
     blog_frontend_docker_build:
         needs: prepare
@@ -349,4 +362,16 @@ jobs:
 
             - name: build_blog_frontend_image
               working-directory: eiqia
-              run: docker build -f docker/blog-frontend/Dockerfile -t blog-frontend:ci .
+              # 与 eiqia_frontend_docker_build 相同的 node:alpine + nx 构建形态，同样暴露在
+              # 瞬态段错误风险下（exit 139），重试策略保持一致。
+              run: |
+                  for attempt in 1 2 3; do
+                      if docker build -f docker/blog-frontend/Dockerfile -t blog-frontend:ci .; then
+                          exit 0
+                      fi
+                      echo "::warning::blog frontend docker build attempt ${attempt}/3 failed"
+                      if [[ "${attempt}" -lt 3 ]]; then
+                          sleep 15
+                      fi
+                  done
+                  exit 1
