@@ -442,6 +442,7 @@ jobs:
                   APP_PUBLIC_BASE_URL: http://localhost
                   SMTP_HOST: smtp.example.com
                   SMTP_FROM: no-reply@eiqia.com
+                  MEILISEARCH_MASTER_KEY: ci-compose-validation-meili-master-key
               run: docker compose -f docker/docker-compose.yml config
             - name: build_eiqia_backend_image
               working-directory: eiqia
