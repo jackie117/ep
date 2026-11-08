@@ -314,6 +314,7 @@ jobs:
                   SMTP_HOST: smtp.example.com
                   SMTP_FROM: no-reply@eiqia.com
                   MEILISEARCH_MASTER_KEY: ci-compose-validation-meili-master-key
+                  REDIS_PASSWORD: ci-compose-validation-redis-password
               run: docker compose -f docker/docker-compose.yml config
 
             - name: build_eiqia_frontend_image
@@ -360,6 +361,7 @@ jobs:
                   SMTP_HOST: smtp.example.com
                   SMTP_FROM: no-reply@eiqia.com
                   MEILISEARCH_MASTER_KEY: ci-compose-validation-meili-master-key
+                  REDIS_PASSWORD: ci-compose-validation-redis-password
               run: docker compose -f docker/docker-compose.yml config
 
             - name: build_blog_frontend_image
